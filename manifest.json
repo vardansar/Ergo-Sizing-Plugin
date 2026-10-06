@@ -1,0 +1,18 @@
+{
+  "name": "Physical size scaler",
+  "id": "6c03b7d9-6972-406e-9d50-e0baec29f9df",
+  "api": "1.0.0",
+  "main": "code.js",
+  "documentAccess": "dynamic-page",
+  "editorType": [
+    "figma"
+  ],
+  "isTool": true,
+  "relaunchButtons": [
+    {
+      "command": "6c03b7d9-6972-406e-9d50-e0baec29f9df",
+      "name": "Physical size scaler"
+    }
+  ],
+  "ui": "ui.html"
+}

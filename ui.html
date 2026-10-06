@@ -1,0 +1,278 @@
+<!doctype html>
+<html>
+<head>
+  <script>
+    try {
+      window.localStorage.getItem('x')
+    } catch (e) {
+      const store = new Map()
+      const shim = {
+        getItem: (k) => (store.has(k) ? store.get(k) : null),
+        setItem: (k, v) => { store.set(k, String(v)) },
+        removeItem: (k) => { store.delete(k) },
+        clear: () => { store.clear() },
+        key: (i) => Array.from(store.keys())[i] ?? null,
+        get length() { return store.size },
+      }
+      Object.defineProperty(window, 'localStorage', { value: shim, configurable: true })
+    }
+  </script>
+  <style>
+    html, body { margin: 0; padding: 0; height: auto; min-height: 0; }
+    #plugin-root { height: auto; }
+    body { display: block; }
+    body > #plugin-root > fig-footer {
+      background-color: var(--figma-color-bg);
+      box-shadow: inset 0 1px 0 0 var(--figma-color-border);
+      border-radius: 0 0 var(--radius-large) var(--radius-large);
+    }
+    dialog.fig-fill-picker-dialog {
+      width: 300px; max-width: 300px; min-width: 300px;
+      max-height: none; height: max-content;
+    }
+    .ppi-display {
+      padding: 4px var(--spacer-3);
+      font-size: var(--body-medium-fontSize);
+      color: var(--figma-color-text-secondary);
+    }
+    .ppi-display.locked {
+      color: var(--figma-color-text);
+      font-weight: var(--body-medium-strong-fontWeight);
+    }
+    .screen-controls[data-locked="true"] fig-input-number,
+    .screen-controls[data-locked="true"] fig-options {
+      opacity: 0.5;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="plugin-root">
+    <fig-content>
+      <fig-group name="Screen configuration">
+        <div class="screen-controls" id="screenControls">
+          <fig-field>
+            <label>Resolution width</label>
+            <fig-input-number id="resWidth" value="1920" units="px"></fig-input-number>
+          </fig-field>
+          <fig-field>
+            <label>Resolution height</label>
+            <fig-input-number id="resHeight" value="1080" units="px"></fig-input-number>
+          </fig-field>
+          <fig-field>
+            <label>Physical size unit</label>
+            <fig-options id="screenUnit" options="inches, mm" value="inches"></fig-options>
+          </fig-field>
+          <fig-field>
+            <label>Screen width</label>
+            <fig-input-number id="screenWidth" value="27"></fig-input-number>
+          </fig-field>
+          <fig-field>
+            <label>Screen height</label>
+            <fig-input-number id="screenHeight" value="15.6"></fig-input-number>
+          </fig-field>
+        </div>
+        <div class="ppi-display" id="ppiDisplay">—</div>
+        <fig-field>
+          <label></label>
+          <fig-button id="lockBtn" variant="secondary" full>Lock screen config</fig-button>
+        </fig-field>
+      </fig-group>
+      <fig-group name="Target size">
+        <fig-field>
+          <label>Unit</label>
+          <fig-options id="targetUnit" options="inches, mm" value="inches"></fig-options>
+        </fig-field>
+        <fig-field>
+          <label>Width</label>
+          <fig-input-number id="targetWidth" value="2"></fig-input-number>
+        </fig-field>
+        <fig-field>
+          <label>Height</label>
+          <fig-input-number id="targetHeight" value="1"></fig-input-number>
+        </fig-field>
+        <fig-field>
+          <label>Lock aspect ratio</label>
+          <fig-switch id="lockAspect" checked></fig-switch>
+        </fig-field>
+        <fig-field>
+          <label>Scale by</label>
+          <fig-options id="scaleBy" options="width, height" value="width"></fig-options>
+        </fig-field>
+      </fig-group>
+    </fig-content>
+    <fig-footer>
+      <label id="status-scale"></label>
+      <fig-button id="action-scale" type="submit" disabled>Scale layer</fig-button>
+    </fig-footer>
+  </div>
+  <script>
+    let lastReportedHeight = 0
+    let resizeRaf = 0
+    let screenLocked = false
+
+    function measurePanelHeight() {
+      const root = document.getElementById('plugin-root')
+      if (!root) return 0
+      let h = Math.ceil(root.getBoundingClientRect().height)
+      const openDialog = document.querySelector('dialog.fig-fill-picker-dialog[open]')
+      if (openDialog) h = Math.max(h, Math.ceil(openDialog.getBoundingClientRect().bottom))
+      return h
+    }
+
+    function reportHeight() {
+      const h = measurePanelHeight()
+      if (h && h !== lastReportedHeight) {
+        lastReportedHeight = h
+        parent.postMessage({ pluginMessage: { type: 'resize', height: h } }, '*')
+      }
+    }
+
+    const pluginRoot = document.getElementById('plugin-root')
+    if (pluginRoot && typeof ResizeObserver !== 'undefined') {
+      new ResizeObserver(() => {
+        if (resizeRaf) cancelAnimationFrame(resizeRaf)
+        resizeRaf = requestAnimationFrame(reportHeight)
+      }).observe(pluginRoot)
+    }
+
+    new MutationObserver(() => {
+      if (resizeRaf) cancelAnimationFrame(resizeRaf)
+      resizeRaf = requestAnimationFrame(reportHeight)
+    }).observe(document.body, {
+      childList: true,
+      attributes: true,
+      attributeFilter: ['open'],
+      subtree: true,
+    })
+
+    function calcPPI() {
+      const resW = Number(document.getElementById('resWidth').value)
+      const resH = Number(document.getElementById('resHeight').value)
+      const unit = String(document.getElementById('screenUnit').value)
+      let scrW = Number(document.getElementById('screenWidth').value)
+      let scrH = Number(document.getElementById('screenHeight').value)
+      if (unit === 'mm') { scrW /= 25.4; scrH /= 25.4 }
+      if (scrW <= 0 || scrH <= 0) return { ppiX: 0, ppiY: 0, label: '—' }
+      const ppiX = resW / scrW
+      const ppiY = resH / scrH
+      const avg = (ppiX + ppiY) / 2
+      return { ppiX, ppiY, label: avg.toFixed(1) + ' PPI' }
+    }
+
+    function updatePPIDisplay() {
+      const el = document.getElementById('ppiDisplay')
+      const info = calcPPI()
+      el.textContent = screenLocked ? ('Locked: ' + info.label) : info.label
+      el.className = 'ppi-display' + (screenLocked ? ' locked' : '')
+    }
+
+    function toggleLock() {
+      screenLocked = !screenLocked
+      const controls = document.getElementById('screenControls')
+      controls.setAttribute('data-locked', String(screenLocked))
+      document.getElementById('lockBtn').textContent = screenLocked ? 'Unlock screen config' : 'Lock screen config'
+      updatePPIDisplay()
+      // Notify code.ts of lock state
+      parent.postMessage({ pluginMessage: { type: 'screen-locked', locked: screenLocked } }, '*')
+    }
+
+    document.getElementById('lockBtn').addEventListener('click', toggleLock)
+
+    // Update PPI on screen param changes
+    ;['resWidth', 'resHeight', 'screenWidth', 'screenHeight', 'screenUnit'].forEach((id) => {
+      document.getElementById(id).addEventListener('change', updatePPIDisplay)
+    })
+
+    updatePPIDisplay()
+
+    function hasParam(values, name) {
+      return Object.prototype.hasOwnProperty.call(values, name)
+    }
+
+    function setControlValue(id, value) {
+      const input = document.getElementById(id)
+      if (!input) return
+      const next = String(value)
+      input.value = next
+      input.setAttribute('value', next)
+    }
+
+    function setControlChecked(id, value) {
+      const input = document.getElementById(id)
+      if (!input) return
+      input.checked = Boolean(value)
+      if (input.checked) input.setAttribute('checked', '')
+      else input.removeAttribute('checked')
+    }
+
+    function setPanelParams(values) {
+      if (typeof values !== 'object' || values === null) return
+      if (hasParam(values, "resWidth")) setControlValue("resWidth", values.resWidth)
+      if (hasParam(values, "resHeight")) setControlValue("resHeight", values.resHeight)
+      if (hasParam(values, "screenUnit")) setControlValue("screenUnit", values.screenUnit)
+      if (hasParam(values, "screenWidth")) setControlValue("screenWidth", values.screenWidth)
+      if (hasParam(values, "screenHeight")) setControlValue("screenHeight", values.screenHeight)
+      if (hasParam(values, "targetUnit")) setControlValue("targetUnit", values.targetUnit)
+      if (hasParam(values, "targetWidth")) setControlValue("targetWidth", values.targetWidth)
+      if (hasParam(values, "targetHeight")) setControlValue("targetHeight", values.targetHeight)
+      if (hasParam(values, "lockAspect")) setControlChecked("lockAspect", values.lockAspect)
+      if (hasParam(values, "scaleBy")) setControlValue("scaleBy", values.scaleBy)
+      if (hasParam(values, "screenLocked")) {
+        screenLocked = values.screenLocked
+        document.getElementById('screenControls').setAttribute('data-locked', String(screenLocked))
+        document.getElementById('lockBtn').textContent = screenLocked ? 'Unlock screen config' : 'Lock screen config'
+      }
+      updatePPIDisplay()
+    }
+
+    function currentParams() {
+      return {
+        resWidth: Number(document.getElementById('resWidth').value),
+        resHeight: Number(document.getElementById('resHeight').value),
+        screenUnit: String(document.getElementById('screenUnit').value),
+        screenWidth: Number(document.getElementById('screenWidth').value),
+        screenHeight: Number(document.getElementById('screenHeight').value),
+        targetUnit: String(document.getElementById('targetUnit').value),
+        targetWidth: Number(document.getElementById('targetWidth').value),
+        targetHeight: Number(document.getElementById('targetHeight').value),
+        lockAspect: Boolean(document.getElementById('lockAspect').checked),
+        scaleBy: String(document.getElementById('scaleBy').value),
+      }
+    }
+
+    document.getElementById('action-scale').addEventListener('click', () => {
+      if (!screenLocked) {
+        // Auto-lock on scale if not locked yet
+        toggleLock()
+      }
+      parent.postMessage({ pluginMessage: { type: 'action', id: "scale", params: currentParams() } }, '*')
+    })
+
+    window.onmessage = (event) => {
+      const msg = event.data && event.data.pluginMessage
+      if (!msg) return
+      if (msg.type === 'params-change') {
+        setPanelParams(msg.params)
+        return
+      }
+    }
+
+    window.addEventListener('message', (event) => {
+      const msg = event.data && event.data.pluginMessage
+      if (!msg || msg.type !== 'action-state' || !msg.actions) return
+      {
+        const a = msg.actions["scale"]
+        const button = document.getElementById('action-scale')
+        if (a && button) {
+          if (a.enabled === false) button.setAttribute('disabled', '')
+          else button.removeAttribute('disabled')
+          if (typeof a.label === 'string') button.textContent = a.label
+        }
+        const status = document.getElementById('status-scale')
+        if (a && status && typeof a.status === 'string') status.textContent = a.status
+      }
+    })
+  </script>
+</body>
+</html>
